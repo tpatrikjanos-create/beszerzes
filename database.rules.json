@@ -1,0 +1,9 @@
+{
+  "rules": {
+    "beszerzes": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "items": { ".indexOn": ["date"] }
+    }
+  }
+}

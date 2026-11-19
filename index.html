@@ -32,7 +32,10 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--sticker);outlin
 .brand{padding:0 12px}
 .brand img{height:28px;width:auto;display:block}
 #roleChip{margin-left:auto;background:var(--forest);color:#fff;padding:0 13px;font-weight:700;font-size:13px;display:none;white-space:nowrap;gap:6px}
-#optBtn{border:none;padding:0 14px;font-weight:700;font-size:14px;color:var(--ink);white-space:nowrap}
+#optBtn{position:relative;border:none;padding:0 14px;font-weight:700;font-size:14px;color:var(--ink);white-space:nowrap}
+#optBtn::after{content:'';position:absolute;top:6px;right:6px;width:9px;height:9px;border-radius:50%;background:#b9b9b9;border:2px solid var(--paper)}
+#optBtn.sy-on::after{background:#3fae2a}
+#optBtn.sy-off::after{background:#e8a317}
 body.shopper #roleChip,body.collector #roleChip{display:flex}
 body:not(.shopper):not(.collector) #optBtn{margin-left:auto}
 
@@ -322,6 +325,9 @@ input[type=range]{width:100%;accent-color:var(--leaf)}
 <div id="splash"><div id="splashLogo"></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
 (function(){
 'use strict';
@@ -414,15 +420,18 @@ let map,meMarker=null,meCircle=null,realLL=null,realAcc=0,virtLL=null,lastAdded=
 let markers={},snooze={},manMarker=null,addLL=null,hCum=0,hKnown=false,compassOK=false;
 const BOUND=0.006;
 
-function saveItems(){
+function _saveItems(){
   if(sset(LS.items,JSON.stringify(items))) return true;
   items.forEach(i=>{ if(i.photo && i.date!==today()) i.photo=null; });
   if(sset(LS.items,JSON.stringify(items))) return true;
   toast('⚠️ Nincs elég tárhely – a fotók nem mentődtek'); items.forEach(i=>i.photo=null); sset(LS.items,JSON.stringify(items)); return false;
 }
+function saveItems(){ const r=_saveItems(); syPush('items'); return r; }
+function saveLists(){ _saveLists(); syPush('lists'); }
+function saveClosed(){ _saveClosed(); syPush('closed'); }
 function saveDev(){ sset(LS.dev,JSON.stringify(dev)); }
-function saveLists(){ sset(LS.lists,JSON.stringify(lists)); }
-function saveClosed(){ sset(LS.closed,JSON.stringify(closedMap)); }
+function _saveLists(){ sset(LS.lists,JSON.stringify(lists)); }
+function _saveClosed(){ sset(LS.closed,JSON.stringify(closedMap)); }
 function today(){ const d=new Date(Date.now()+dev.dayOffset*864e5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function visible(){ const t=today(); return items.filter(i=>i.date===t && i.place===dev.place); }
 function ckey(){ return today()+'|'+dev.place; }
@@ -818,6 +827,7 @@ $('hudClose').onclick=askClose;
 
 /* ====== OLDALAK ====== */
 function openPage(title,build){
+  curBuild=build;
   $('pageT').textContent=title; $('page').classList.add('open'); $('menu').classList.remove('on'); closeSheet(true); build(); syncHist();
 }
 function hidePage(){ $('page').classList.remove('open'); syncHist(); }
@@ -1000,7 +1010,7 @@ function renderDev(){
     '<div class="sub">Bekapcsolva a pöttyöt ujjal húzhatod, vagy a térképre koppintva áthelyezheted – így gyaloglás nélkül kipróbálható a begyűjtés.</div>'+
     '<div style="margin-top:14px;font-weight:800;color:var(--g1)">Közelségi sugár: <span id="rv">'+dev.radius+'</span> m</div><input type="range" id="dRad" min="10" max="60" step="5" value="'+dev.radius+'"></div>'+
     '<div class="card"><h4>Eszközök</h4><div class="btns" style="flex-wrap:wrap"><button class="btn ghost" id="dDemo" style="flex:1 1 45%">🧪 5 demó tű</button><button class="btn ghost" id="dDay" style="flex:1 1 45%">🌙 Éjfél +1 nap</button></div>'+
-    '<div class="btns"><button class="btn ghost" id="dDay0">↩ Nap visszaállítása</button><button class="btn red" id="dClr">🗑 Összes adat törlése</button></div>'+
+    '<div class="btns"><button class="btn ghost" id="dDay0">↩ Nap visszaállítása</button><button class="btn red" id="dClr">🗑 Összes adat törlése (közös is)</button></div>'+
     '<div class="sub" style="margin-top:10px">Szimulált nap eltolás: <b>+'+dev.dayOffset+'</b> · mai dátum az appban: <b>'+today()+'</b></div></div>'+
     '<div class="card"><h4>Információ</h4><div class="mono">Terület: '+esc(p.name)+'<br>Közép: '+p.lat.toFixed(6)+', '+p.lng.toFixed(6)+'<br>Pötty: '+(ll?ll.lat.toFixed(6)+', '+ll.lng.toFixed(6):'nincs')+(!dev.virtual&&realAcc?' (±'+Math.round(realAcc)+' m)':'')+'<br>Irány: '+(hKnown?Math.round(((hCum%360)+360)%360)+'°'+(compassOK?' (iránytű)':' (GPS)'):'nincs adat')+'<br>Tételek összesen: '+items.length+' · ma itt: '+visible().length+'<br>Cím a listán: '+lists.length+'<br>Szenzor események: '+oriCount+'<br>Szerep: '+esc(role||'-')+'</div></div>';
   body.innerHTML=h;
@@ -1041,9 +1051,95 @@ document.querySelectorAll('.role').forEach(b=>b.onclick=()=>{ askOrientationPerm
 $('fab').onclick=()=>openAdd();
 
 /* ====== INDÍTÁS ====== */
+/* ====== FIREBASE SZINKRON (Realtime Database + anonim Auth) ====== */
+const FB_CFG={apiKey:"AIzaSyBC1NY6l0mUkRUnq1xwxrsRjLJkMk3vMuc",authDomain:"nagybanibeszerzes.firebaseapp.com",databaseURL:"https://nagybanibeszerzes-default-rtdb.europe-west1.firebasedatabase.app",projectId:"nagybanibeszerzes",storageBucket:"nagybanibeszerzes.firebasestorage.app",messagingSenderId:"506531563073",appId:"1:506531563073:web:b26be5e1e47154f27128c0"};
+const SY={db:null,ready:false,first:{},sent:{items:{},lists:{},closed:{}},keep:30};
+let curBuild=null;
+function syState(s){ const b=$('optBtn'); if(!b) return; b.classList.remove('sy-on','sy-off'); b.classList.add(s); SY.state=s; }
+/* kanonikus alak: rendezett kulcsok, üres tömb/objektum/null eldobva (ahogy az RTDB tárolja) */
+function cn(v){
+  if(v===null||v===undefined) return undefined;
+  if(Array.isArray(v)){ const a=v.map(cn).filter(x=>x!==undefined); return a.length?a:undefined; }
+  if(typeof v==='object'){ const o={}; let n=0; Object.keys(v).sort().forEach(k=>{ const x=cn(v[k]); if(x!==undefined){ o[k]=x; n++; } }); return n?o:undefined; }
+  return v;
+}
+function cj(v){ const x=cn(v); return x===undefined?'':JSON.stringify(x); }
+function byId(a){ const m={}; a.forEach(x=>{ if(x&&x.id) m[x.id]=x; }); return m; }
+function syLocal(kind){ return kind==='items'?byId(items):kind==='lists'?byId(lists):closedMap; }
+function syCutoff(){ const d=new Date(Date.now()-SY.keep*864e5); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function syPush(kind){
+  if(!SY.db||!SY.ready||!SY.first[kind]) return;
+  const cur=syLocal(kind), sent=SY.sent[kind], upd={};
+  Object.keys(cur).forEach(k=>{ const js=cj(cur[k]); if(js!==sent[k]){ upd[k]=JSON.parse(JSON.stringify(cur[k])); sent[k]=js; } });
+  Object.keys(sent).forEach(k=>{ if(!(k in cur)){ upd[k]=null; delete sent[k]; } });
+  const ks=Object.keys(upd), ref=SY.db.ref('beszerzes/'+kind);
+  for(let i=0;i<ks.length;i+=4){ const part={}; ks.slice(i,i+4).forEach(k=>part[k]=upd[k]); ref.update(part).catch(e=>{ syState('sy-off'); }); }
+}
+function stampOf(i){ return Math.max(i.ts||0,i.edited||0,i.collectedTs||0); }
+function syMerge(kind,remote){
+  const loc=syLocal(kind), out=Object.assign({},remote);
+  if(kind==='items'){
+    const cut=syCutoff();
+    Object.keys(loc).forEach(k=>{ const l=loc[k]; if(l.date<cut) return; if(!out[k]||stampOf(l)>stampOf(out[k])) out[k]=l; });
+  } else if(kind==='lists'){
+    const names={}; Object.keys(out).forEach(k=>names[norm(out[k].name||'')]=k);
+    Object.keys(loc).forEach(k=>{
+      if(out[k]) return;
+      const nk=names[norm(loc[k].name||'')];
+      if(nk){ const t=out[nk]; t.items=t.items||[]; (loc[k].items||[]).forEach(n=>{ if(!t.items.some(x=>x.id===n.id)) t.items.push(n); }); }
+      else out[k]=loc[k];
+    });
+  } else Object.keys(loc).forEach(k=>{ if(!out[k]) out[k]=loc[k]; });
+  return out;
+}
+function syApply(kind,map){
+  if(kind==='items'){
+    const old=byId(items);
+    items=Object.keys(map).map(k=>map[k]).filter(x=>x&&x.id);
+    sset(LS.items,JSON.stringify(items));
+    if(role==='collector'){ const t=today(); const nw=items.filter(i=>!old[i.id]&&i.date===t&&!i.collected); if(nw.length&&SY.first.items===2) toast('📍 Új tű: '+nw[nw.length-1].name,3000); }
+  } else if(kind==='lists'){
+    lists=Object.keys(map).map(k=>map[k]).filter(x=>x&&x.id); lists.forEach(c=>{ c.items=c.items||[]; });
+    sset(LS.lists,JSON.stringify(lists));
+  } else { closedMap=map; sset(LS.closed,JSON.stringify(closedMap)); }
+}
+function syRefresh(){
+  renderMarkers(); renderHud();
+  const a=document.activeElement, typing=a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName);
+  if($('page').classList.contains('open') && curBuild && !typing) curBuild();
+}
+function syOn(kind,snap){
+  const remote=snap.val()||{}, sent=SY.sent[kind];
+  if(!SY.first[kind]){
+    const merged=syMerge(kind,remote);
+    Object.keys(remote).forEach(k=>sent[k]=cj(remote[k]));
+    syApply(kind,merged); SY.first[kind]=1; syPush(kind); SY.first[kind]=2; syRefresh(); return;
+  }
+  let same=true; const rk=Object.keys(remote), sk=Object.keys(sent);
+  if(rk.length!==sk.length) same=false; else rk.forEach(k=>{ if(cj(remote[k])!==sent[k]) same=false; });
+  if(same) return;
+  Object.keys(sent).forEach(k=>delete sent[k]); rk.forEach(k=>sent[k]=cj(remote[k]));
+  syApply(kind,remote); syRefresh();
+}
+function syncInit(){
+  if(typeof firebase==='undefined'){ syState('sy-off'); return; }
+  try{
+    firebase.initializeApp(FB_CFG); SY.db=firebase.database();
+    SY.db.ref('.info/connected').on('value',s=>syState(s.val()?'sy-on':'sy-off'));
+    firebase.auth().onAuthStateChanged(u=>{
+      if(!u||SY.ready) return; SY.ready=true;
+      const base=SY.db.ref('beszerzes');
+      base.child('items').orderByChild('date').startAt(syCutoff()).on('value',s=>syOn('items',s),()=>syState('sy-off'));
+      base.child('lists').on('value',s=>syOn('lists',s),()=>syState('sy-off'));
+      base.child('closed').on('value',s=>syOn('closed',s),()=>syState('sy-off'));
+    });
+    firebase.auth().signInAnonymously().catch(()=>syState('sy-off'));
+  }catch(e){ syState('sy-off'); }
+}
+
 function boot(){
   $('splashLogo').innerHTML=logoSVG(); $('brandImg').src=LOGO_WORD;
-  initMap(); lastDay=today();
+  initMap(); lastDay=today(); syncInit();
   renderHud(); startGps(); startOrientation(); updateMe();
     setTimeout(()=>{
     $('splash').classList.add('out'); setTimeout(()=>{ const s=$('splash'); if(s) s.remove(); },700);
