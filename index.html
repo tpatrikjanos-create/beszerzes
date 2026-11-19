@@ -396,7 +396,8 @@ const LS={items:'nb_items',role:'nb_role',dev:'nb_dev',lists:'nb_lists',closed:'
 const PLACES={
   market:{name:'Nagybani Piac',sub:'Nagykőrösi út, Budapest',lat:47.414838,lng:19.168016,zoom:19},
   rezeda:{name:'Rezeda utca 4.',sub:'1204 Budapest (teszt) · C4Q6+G6P',lat:47.438838,lng:19.110578,zoom:19},
-  kalman:{name:'Kálmán Imre utca 20.',sub:'1054 Budapest (teszt) · közelítő hely',lat:47.50689,lng:19.05375,zoom:19}
+  kalman:{name:'Kálmán Imre utca 20.',sub:'1054 Budapest (teszt) · közelítő hely',lat:47.50689,lng:19.05375,zoom:19,b:0.012},
+  kiralyhago:{name:'Királyhágó út 71.',sub:'1213 Budapest (teszt) · közelítő hely',lat:47.4250,lng:19.0887,zoom:19,b:0.012}
 };
 let items=jget(LS.items,[]);
 let lists=jget(LS.lists,null);
@@ -406,9 +407,9 @@ if(!lists){
   lists=Object.values(m); sset(LS.lists,JSON.stringify(lists));
 }
 let closedMap=jget(LS.closed,{});
-let dev=Object.assign({dayOffset:0,virtual:false,radius:20,place:'market'},jget(LS.dev,{}));
+let dev=Object.assign({dayOffset:0,virtual:false,radius:20,place:'market',auto:true},jget(LS.dev,{}));
 if(!PLACES[dev.place]) dev.place='market';
-let role=sget(LS.role);
+let role=null,editId=null,manCtx=null,histSent=false,ignorePop=0;
 let map,meMarker=null,meCircle=null,realLL=null,realAcc=0,virtLL=null,lastAdded=null,selectedId=null,curCollect=null,histFilter='all',lv={view:'addr',cust:null},mail={from:'',text:'',parsed:[]},oriCount=0,lastOri=0;
 let markers={},snooze={},manMarker=null,addLL=null,hCum=0,hKnown=false,compassOK=false;
 const BOUND=0.006;
@@ -432,7 +433,7 @@ let toastT;
 function toast(msg,ms){ const t=$('toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('on'),ms||3000); }
 
 /* ====== TÉRKÉP ====== */
-function boundsFor(p){ return [[p.lat-BOUND,p.lng-BOUND],[p.lat+BOUND,p.lng+BOUND]]; }
+function boundsFor(p){ const b=p.b||BOUND; return [[p.lat-b,p.lng-b],[p.lat+b,p.lng+b]]; }
 function initMap(){
   const p=PLACES[dev.place];
   map=L.map('map',{center:[p.lat,p.lng],zoom:p.zoom,minZoom:16,maxZoom:21,zoomControl:false,maxBounds:boundsFor(p),maxBoundsViscosity:1});
@@ -454,7 +455,14 @@ function setPlace(key){
 
 /* ====== KÉK PÖTTY + IRÁNY ====== */
 function myLL(){ return dev.virtual?virtLL:realLL; }
-function inBounds(ll){ const p=PLACES[dev.place]; return ll && Math.abs(ll.lat-p.lat)<=BOUND && Math.abs(ll.lng-p.lng)<=BOUND; }
+function inPlace(ll,p){ const b=p.b||BOUND; return !!ll && Math.abs(ll.lat-p.lat)<=b && Math.abs(ll.lng-p.lng)<=b; }
+function inBounds(ll){ return inPlace(ll,PLACES[dev.place]); }
+function autoPlace(){
+  if(dev.virtual || dev.auto===false || !realLL || inBounds(realLL)) return;
+  for(const k of Object.keys(PLACES)){
+    if(inPlace(realLL,PLACES[k])){ if(dev.place!==k){ setPlace(k); toast('📍 Térkép automatikusan: '+PLACES[k].name,4500); } return; }
+  }
+}
 function updateMe(){
   const ll=myLL();
   const ok=ll && (dev.virtual || inBounds(ll));
@@ -517,7 +525,7 @@ function startGps(){
   navigator.geolocation.watchPosition(pos=>{
     realLL={lat:pos.coords.latitude,lng:pos.coords.longitude}; realAcc=pos.coords.accuracy||0;
     if(!compassOK && pos.coords.heading!=null && !isNaN(pos.coords.heading) && (pos.coords.speed||0)>0.7) setHeading(pos.coords.heading);
-    updateMe(); checkNearby();
+    autoPlace(); updateMe(); checkNearby();
   },err=>{
     if(err.code===1) toast('A helymeghatározás tiltva. Engedélyezd a böngészőben.',7000);
   },{enableHighAccuracy:true,maximumAge:3000,timeout:20000});
@@ -569,16 +577,35 @@ $('hudMain').onclick=openToday;
 $('colChip').onclick=openToday;
 
 /* ====== LAPOK ====== */
+function layersOpen(){ return $('sheet').classList.contains('open') || $('page').classList.contains('open') || !!manMarker; }
+function syncHist(){
+  setTimeout(()=>{
+    const on=layersOpen();
+    if(on && !histSent){ try{ history.pushState({nb:1},''); histSent=true; }catch(e){} }
+    else if(!on && histSent){ histSent=false; ignorePop++; try{ history.back(); }catch(e){ ignorePop--; } }
+  },0);
+}
+function closeTop(){
+  if($('sheet').classList.contains('open')){ if($('sheet').dataset.form==='1' && !editId) saveDraft(); if($('sheet').dataset.form==='1') editId=null; closeSheet(); }
+  else if($('page').classList.contains('open')){ hidePage(); renderMarkers(); }
+  else if(manMarker){ manBack(); }
+}
+window.addEventListener('popstate',()=>{
+  if(ignorePop>0){ ignorePop--; return; }
+  histSent=false; closeTop(); syncHist();
+});
 function openSheet(html,cls,backdrop){
   const s=$('sheet'); s.className=cls||''; s.innerHTML='<div class="grab"></div>'+html;
   s.scrollTop=0; requestAnimationFrame(()=>{ s.classList.add('open'); });
   $('bd').classList.toggle('on',!!backdrop);
+  syncHist();
 }
 function closeSheet(silent){
   if(curCollect && !silent){ snooze[curCollect]=Date.now()+120000; }
   curCollect=null; selectedId=null;
   $('sheet').classList.remove('open'); $('bd').classList.remove('on'); $('sheet').oninput=null;
   if(!silent) renderMarkers();
+  syncHist();
 }
 function sheetBusy(){ return $('sheet').classList.contains('open') || $('page').classList.contains('open') || $('picker').classList.contains('on') || !!manMarker; }
 $('bd').onclick=()=>{ if($('sheet').dataset.form==='1'){ saveDraft(); } closeSheet(); };
@@ -595,17 +622,23 @@ function readForm(){
 }
 let draftT;
 function saveDraft(){
-  if(!$('fName')) return;
+  if(!$('fName') || editId) return;
   const d=readForm();
   if(!d.name&&!d.qty&&!d.amount&&!d.stand&&!d.note&&!d.photo&&!d.dRek&&!d.dLad&&!d.dEgyQ){ sdel(LS.draft); return; }
   if(!sset(LS.draft,JSON.stringify(d))){ d.photo=null; sset(LS.draft,JSON.stringify(d)); }
 }
 function saveDraftSoon(){ clearTimeout(draftT); draftT=setTimeout(saveDraft,250); }
 function openAdd(opts){
-  opts=opts||{}; const d=opts.draft||{};
+  opts=opts||{}; editId=opts.editId||null;
+  let d=opts.draft||{};
+  if(opts.edit){
+    const it=items.find(x=>x.id===opts.edit);
+    if(it){ editId=it.id; const dp=it.dep||{}, ek=Object.keys(dp).filter(k=>k!=='rekesz'&&k!=='láda')[0];
+      d={name:it.name,qty:it.qty!=null?String(it.qty).replace('.',','):'',unit:it.unit||'',amount:String(it.amount||''),stand:it.stand||'',note:it.note||'',paid:it.paid!==false,dRek:dp['rekesz']||0,dLad:dp['láda']||0,dEgyN:ek||'',dEgyQ:ek?dp[ek]:0,photo:it.photo||null,ll:{lat:it.lat,lng:it.lng}}; opts.ll=d.ll; }
+  }
   draftPhoto=d.photo||null; formPaid=d.paid!==false; formUnit=d.unit||''; addLL=opts.ll||d.ll||null;
   openSheet(
-    '<h3>🛒 Új vásárlás'+(addLL?' <span style="font-size:13px;color:#a05a00;font-weight:800">· 📌 kézi hely</span>':'')+'</h3>'+
+    '<h3>'+(editId?'✏️ Tű módosítása':'🛒 Új vásárlás')+(addLL&&!editId?' <span style="font-size:13px;color:#a05a00;font-weight:800">· 📌 kézi hely</span>':'')+'</h3>'+
     '<label class="f">Mit vettél?</label><input class="in" id="fName" placeholder="pl. répa" autocomplete="off" value="'+esc(d.name||'')+'">'+
     '<div class="two"><div><label class="f">Mennyiség</label><input class="in" id="fQty" inputmode="decimal" placeholder="20" value="'+esc(d.qty||'')+'"></div>'+
     '<div><label class="f">Egység</label><input class="in" id="fUnit" list="unitList" placeholder="kg" autocomplete="off" value="'+esc(d.unit||'')+'"></div></div>'+
@@ -619,7 +652,7 @@ function openAdd(opts){
     '<div class="stp"><input id="dEgyN" placeholder="Egyéb edény neve (pl. doboz)" value="'+esc(d.dEgyN||'')+'"><div class="ctl"><button type="button" data-st="dEgyQ:-1">−</button><output id="dEgyQ">'+(d.dEgyQ||0)+'</output><button type="button" data-st="dEgyQ:1">+</button></div></div></div>'+
     '<label class="f">Megjegyzés</label><textarea class="in" id="fNote" placeholder="pl. a bódé hátuljában">'+esc(d.note||'')+'</textarea>'+
     '<label class="photoBtn" id="photoLbl"><span id="photoIco" style="font-size:24px"'+(draftPhoto?' hidden':'')+'>📷</span><img id="photoImg" '+(draftPhoto?'src="'+draftPhoto+'"':'style="display:none"')+'><span id="photoTxt">'+(draftPhoto?'Fotó kész ✓ (cseréhez koppints)':'Fotó hozzáadása (opcionális)')+'</span><input type="file" id="fPhoto" accept="image/*" hidden></label>'+
-    '<div class="btns"><button class="btn ghost" id="fCancel">Mégse</button><button class="btn go" id="fSave">Tű lerakása 📍</button></div>',
+    (editId?'<button class="btn ghost" id="fMove" style="width:100%;margin-bottom:8px">📌 Tű áthelyezése a térképen</button>':'')+'<div class="btns"><button class="btn ghost" id="fCancel">Mégse</button><button class="btn go" id="fSave">'+(editId?'Módosítás mentése':'Tű lerakása 📍')+'</button></div>',
     'tall',true);
   $('sheet').dataset.form='1';
   const sh=$('sheet');
@@ -629,7 +662,8 @@ function openAdd(opts){
     const uc=e.target.closest('.uc'); if(uc){ $('fUnit').value=uc.dataset.u; sh.querySelectorAll('.uc').forEach(b=>b.classList.toggle('on',b===uc)); saveDraftSoon(); return; }
   };
   $('fPaid').onclick=()=>{ formPaid=!formPaid; $('fPaid').querySelector('.tgl').classList.toggle('on',formPaid); saveDraftSoon(); };
-  $('fCancel').onclick=()=>{ sdel(LS.draft); closeSheet(); };
+  $('fCancel').onclick=()=>{ if(!editId) sdel(LS.draft); editId=null; closeSheet(); };
+  if($('fMove')) $('fMove').onclick=()=>{ const data=readForm(); manCtx={data,editId}; editId=null; const at=data.ll?L.latLng(data.ll.lat,data.ll.lng):null; startManual(at); };
   $('fPhoto').onchange=e=>{
     const f=e.target.files&&e.target.files[0]; if(!f) return;
     $('photoTxt').textContent='Feldolgozás…';
@@ -655,6 +689,11 @@ function saveItem(){
   if(addLL){ lat=addLL.lat; lng=addLL.lng; }
   else if(ll && (dev.virtual||inBounds(ll))){ lat=ll.lat; lng=ll.lng; }
   else { const c=map.getCenter(); lat=c.lat; lng=c.lng; setTimeout(()=>toast('Nincs érvényes helyzet – a térkép közepére tettem a tűt.',4500),700); }
+  if(editId){
+    const ex=items.find(x=>x.id===editId);
+    if(ex){ Object.assign(ex,{name,qty,unit,amount,paid:f.paid,stand:f.stand.trim(),note:f.note.trim(),photo:f.photo,dep,edited:Date.now()}); if(addLL){ ex.lat=addLL.lat; ex.lng=addLL.lng; } saveItems(); }
+    editId=null; addLL=null; closeSheet(true); renderMarkers(); toast('✓ Tű módosítva'); return;
+  }
   const it={id:uid(),name,qty,unit,amount,paid:f.paid,stand:f.stand.trim(),note:f.note.trim(),photo:f.photo,dep,lat,lng,place:dev.place,date:today(),ts:Date.now(),collected:false};
   items.push(it); saveItems(); sdel(LS.draft); lastAdded=it.id; addLL=null;
   if(closedMap[ckey()]){ delete closedMap[ckey()]; saveClosed(); }
@@ -692,19 +731,20 @@ function itemBody(it){
 }
 
 /* --- manuális tű: drag and drop --- */
-function startManual(){
+function startManual(at){
   closeSheet(true); $('menu').classList.remove('on');
-  const c=map.getCenter();
+  const c=at||map.getCenter();
   manMarker=L.marker(c,{draggable:true,zIndexOffset:3000,icon:L.divIcon({className:'stand-ico',iconSize:[0,0],iconAnchor:[0,0],html:tagHtml('📌','Húzd a helyére','',null,'man drop')})}).addTo(map);
-  $('manBar').classList.add('on'); $('dock').style.display='none'; $('hud').style.display='none';
+  $('manBar').classList.add('on'); $('dock').style.display='none'; $('hud').style.display='none'; syncHist();
 }
 function cancelManual(){
   if(manMarker){ map.removeLayer(manMarker); manMarker=null; }
-  $('manBar').classList.remove('on'); $('dock').style.display=''; if(role) $('hud').style.display='flex';
+  $('manBar').classList.remove('on'); $('dock').style.display=''; if(role) $('hud').style.display='flex'; syncHist();
 }
-$('manBtn').onclick=startManual;
-$('manCancel').onclick=cancelManual;
-$('manOk').onclick=()=>{ const p=manMarker.getLatLng(); const ll={lat:p.lat,lng:p.lng}; cancelManual(); openAdd({ll}); };
+function manBack(){ const ctx=manCtx; manCtx=null; cancelManual(); if(ctx) openAdd({draft:ctx.data,ll:ctx.data.ll,editId:ctx.editId}); }
+$('manBtn').onclick=()=>{ manCtx=null; startManual(); };
+$('manCancel').onclick=manBack;
+$('manOk').onclick=()=>{ const p=manMarker.getLatLng(); const ll={lat:p.lat,lng:p.lng}; const ctx=manCtx; manCtx=null; cancelManual(); if(ctx) openAdd({draft:ctx.data,ll,editId:ctx.editId}); else openAdd({ll}); };
 
 /* --- beszerző: begyűjtés --- */
 function openCollect(id,auto,d){
@@ -735,9 +775,10 @@ function openDetail(id){
   const it=items.find(i=>i.id===id); if(!it) return;
   openSheet('<h3>Tű részletei</h3>'+itemBody(it)+
     '<div class="sub" style="margin-bottom:10px">🕒 '+timeStr(it.ts)+(it.collected?' · <span class="badge b-ok">Begyűjtve '+timeStr(it.collectedTs)+'</span>':' · <span class="badge b-no">Még nincs begyűjtve</span>')+'</div>'+
-    '<div class="btns"><button class="btn red" id="dDel">Törlés</button><button class="btn ghost" id="dClose">Bezár</button></div>','quarter',true);
+    '<div class="btns"><button class="btn red" id="dDel">Törlés</button><button class="btn go" id="dEdit">✏️ Módosítás</button><button class="btn ghost" id="dClose">Bezár</button></div>','quarter',true);
   let armed=false;
   $('dClose').onclick=()=>closeSheet();
+  $('dEdit').onclick=()=>openAdd({edit:id});
   $('dDel').onclick=()=>{ if(!armed){ armed=true; $('dDel').textContent='Biztosan törlöd?'; return; } items=items.filter(i=>i.id!==id); saveItems(); closeSheet(); toast('Tű törölve.'); };
 }
 function checkNearby(){
@@ -761,7 +802,7 @@ function askClose(){
   if(!list.length){ toast('Nincs még rögzített tétel, nincs mit lezárni.'); return; }
   if(closedMap[ckey()]){ toast('A vásárlás már kész. Új tétel felvételekor újra nyitott lesz.',3500); return; }
   const sum=list.reduce((a,i)=>a+(Number(i.amount)||0),0), dep=depStr(sumDeposit(list));
-  $('page').classList.remove('open');
+  hidePage();
   openSheet('<h3>Biztosan kész a vásárlás?</h3>'+
     '<div class="card" style="box-shadow:none;background:#f1f7ec"><b>'+list.length+' tétel · '+fmt(sum)+'</b>'+(dep?'<div class="sub">♻️ Csereedény: '+esc(dep)+'</div>':'')+'</div>'+
     '<div class="sub" style="margin-bottom:12px">Utána is visszatérhetsz a térképre pótolni – új tétel felvételekor a vásárlás újra nyitott lesz.</div>'+
@@ -777,9 +818,10 @@ $('hudClose').onclick=askClose;
 
 /* ====== OLDALAK ====== */
 function openPage(title,build){
-  $('pageT').textContent=title; $('page').classList.add('open'); $('menu').classList.remove('on'); closeSheet(true); build();
+  $('pageT').textContent=title; $('page').classList.add('open'); $('menu').classList.remove('on'); closeSheet(true); build(); syncHist();
 }
-function closePage(){ $('page').classList.remove('open'); renderMarkers(); }
+function hidePage(){ $('page').classList.remove('open'); syncHist(); }
+function closePage(){ hidePage(); renderMarkers(); }
 $('pageX').onclick=closePage;
 
 /* --- mai vásárlások --- */
@@ -802,7 +844,7 @@ function renderToday(){
   }
   if(role==='shopper' && list.length && !cl) h+='<div class="btns"><button class="btn amber" id="tClose">✓ Vásárlás kész</button></div>';
   body.innerHTML=h;
-  body.querySelectorAll('.it.tap').forEach(r=>r.onclick=()=>{ const it=items.find(x=>x.id===r.dataset.id); if(!it) return; $('page').classList.remove('open'); selectedId=it.id; map.setView([it.lat,it.lng],Math.max(map.getZoom(),19)); renderMarkers(); });
+  body.querySelectorAll('.it.tap').forEach(r=>r.onclick=()=>{ const it=items.find(x=>x.id===r.dataset.id); if(!it) return; hidePage(); selectedId=it.id; map.setView([it.lat,it.lng],Math.max(map.getZoom(),19)); renderMarkers(); });
   const tc=$('tClose'); if(tc) tc.onclick=askClose;
 }
 
@@ -954,7 +996,7 @@ function renderDev(){
   let h='<div class="card"><h4>Szerep</h4><div class="seg"><button data-role="shopper" class="'+(role==='shopper'?'on':'')+'">🧺 Bevásárló</button><button data-role="collector" class="'+(role==='collector'?'on':'')+'">🚚 Beszerző</button></div></div>';
   h+='<div class="card"><h4>Teszttérkép</h4>';
   Object.keys(PLACES).forEach(k=>{ const q=PLACES[k]; h+='<button class="plc'+(dev.place===k?' on':'')+'" data-p="'+k+'">'+esc(q.name)+'<small>'+esc(q.sub)+'</small></button>'; });
-  h+='</div><div class="card"><h4>Helyzet</h4><div class="sw" id="dVirt"><span>🟣 Virtuális hely (húzható kék pötty)</span><div class="tgl'+(dev.virtual?' on':'')+'"></div></div>'+
+  h+='<div class="sw" id="dAuto" style="margin:4px 0 0"><span>📍 Automatikus térképválasztás a GPS alapján</span><div class="tgl'+(dev.auto!==false?' on':'')+'"></div></div></div><div class="card"><h4>Helyzet</h4><div class="sw" id="dVirt"><span>🟣 Virtuális hely (húzható kék pötty)</span><div class="tgl'+(dev.virtual?' on':'')+'"></div></div>'+
     '<div class="sub">Bekapcsolva a pöttyöt ujjal húzhatod, vagy a térképre koppintva áthelyezheted – így gyaloglás nélkül kipróbálható a begyűjtés.</div>'+
     '<div style="margin-top:14px;font-weight:800;color:var(--g1)">Közelségi sugár: <span id="rv">'+dev.radius+'</span> m</div><input type="range" id="dRad" min="10" max="60" step="5" value="'+dev.radius+'"></div>'+
     '<div class="card"><h4>Eszközök</h4><div class="btns" style="flex-wrap:wrap"><button class="btn ghost" id="dDemo" style="flex:1 1 45%">🧪 5 demó tű</button><button class="btn ghost" id="dDay" style="flex:1 1 45%">🌙 Éjfél +1 nap</button></div>'+
@@ -963,7 +1005,8 @@ function renderDev(){
     '<div class="card"><h4>Információ</h4><div class="mono">Terület: '+esc(p.name)+'<br>Közép: '+p.lat.toFixed(6)+', '+p.lng.toFixed(6)+'<br>Pötty: '+(ll?ll.lat.toFixed(6)+', '+ll.lng.toFixed(6):'nincs')+(!dev.virtual&&realAcc?' (±'+Math.round(realAcc)+' m)':'')+'<br>Irány: '+(hKnown?Math.round(((hCum%360)+360)%360)+'°'+(compassOK?' (iránytű)':' (GPS)'):'nincs adat')+'<br>Tételek összesen: '+items.length+' · ma itt: '+visible().length+'<br>Cím a listán: '+lists.length+'<br>Szenzor események: '+oriCount+'<br>Szerep: '+esc(role||'-')+'</div></div>';
   body.innerHTML=h;
   body.querySelectorAll('[data-role]').forEach(b=>b.onclick=()=>{ askOrientationPermission(); setRole(b.dataset.role); renderDev(); toast(b.dataset.role==='shopper'?'🧺 Bevásárló nézet':'🚚 Beszerző nézet'); });
-  body.querySelectorAll('.plc').forEach(b=>b.onclick=()=>{ setPlace(b.dataset.p); renderDev(); });
+  body.querySelectorAll('.plc').forEach(b=>b.onclick=()=>{ dev.auto=false; saveDev(); setPlace(b.dataset.p); renderDev(); toast('Kézi térképválasztás – az automatikus kikapcsolva'); });
+  $('dAuto').onclick=()=>{ dev.auto=!dev.auto; saveDev(); renderDev(); if(dev.auto) autoPlace(); };
   $('dVirt').onclick=()=>{ dev.virtual=!dev.virtual; if(dev.virtual && !virtLL) virtLL={lat:PLACES[dev.place].lat,lng:PLACES[dev.place].lng}; saveDev(); updateMe(); renderDev(); toast(dev.virtual?'Virtuális hely bekapcsolva':'Valódi GPS'); };
   $('dRad').oninput=e=>{ dev.radius=Number(e.target.value); $('rv').textContent=dev.radius; saveDev(); };
   $('dDemo').onclick=()=>{
@@ -994,21 +1037,18 @@ function setRole(r){
   $('picker').classList.remove('on');
   closeSheet(true); renderMarkers(); snooze={};
 }
-document.querySelectorAll('.role').forEach(b=>b.onclick=()=>{ askOrientationPermission(); setRole(b.dataset.r); });
+document.querySelectorAll('.role').forEach(b=>b.onclick=()=>{ askOrientationPermission(); setRole(b.dataset.r); const dr=jget(LS.draft,null); if(b.dataset.r==='shopper' && dr){ openAdd({draft:dr}); toast('📝 Folytathatod a megkezdett vásárlást.',3500); } });
 $('fab').onclick=()=>openAdd();
 
 /* ====== INDÍTÁS ====== */
 function boot(){
   $('splashLogo').innerHTML=logoSVG(); $('brandImg').src=LOGO_WORD;
   initMap(); lastDay=today();
-  if(role) setRole(role);
   renderHud(); startGps(); startOrientation(); updateMe();
-  const draft=jget(LS.draft,null);
-  setTimeout(()=>{
+    setTimeout(()=>{
     $('splash').classList.add('out'); setTimeout(()=>{ const s=$('splash'); if(s) s.remove(); },700);
-    if(!role) showPicker();
-    else if(draft && role==='shopper'){ openAdd({draft}); toast('📝 Folytathatod a megkezdett vásárlást.',3500); }
-  },role?3100:3600);
+    showPicker();
+  },3600);
 }
 window.addEventListener('load',boot);
 })();
